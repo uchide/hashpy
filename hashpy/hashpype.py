@@ -363,7 +363,7 @@ class HashPype(object):
         for k in range(self.npol):
             for nm in range(self.nmc):
                 self.p_azi_mc[k,nm] = self.qazi[k]
-                self.p_the_mc[k,nm], iflag = get_tts(self.index[nm],self.dist[k],self.qdep2[nm])
+                self.p_the_mc[k,nm], iflag = get_tts(self.index[nm],self.dist[k],self.qdep2[nm]*0.001)
         self.magap, self.mpgap = get_gap(self.p_azi_mc[:self.npol,0],self.p_the_mc[:self.npol,0],self.npol)
     
     def view_polarity_data(self):
@@ -514,7 +514,8 @@ class HashPype(object):
         self.calculate_quality(use_amplitudes=True)
 
 
-class HashError(StandardError):
+#class HashError(StandardError):
+class HashError(Exception):
     """Throw this if something happens while running"""
     pass
 
