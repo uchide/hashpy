@@ -26,17 +26,29 @@ def inputOBSPY(hp, event):
     """
     # Takes an obspy event and loads FM data into HASH
     _o = event.preferred_origin()
+    if _o is None:
+        _o = event.origins[0]
     _m = event.preferred_magnitude()
-    
+    if _m is None:
+        _m = event.magnitudes[0]
+
     hp.tstamp = _o.time.timestamp
     hp.qlat   = _o.latitude
     hp.qlon   = _o.longitude
     hp.qdep   = _o.depth
-    hp.icusp  = _o.creation_info.version
-    hp.seh    = _o.origin_uncertainty.confidence_ellipsoid.semi_major_axis_length
-    hp.sez    = _o.origin_uncertainty.confidence_ellipsoid.semi_intermediate_axis_length
+    #hp.icusp  = _o.creation_info.version
+    # hp.seh    = _o.origin_uncertainty.confidence_ellipsoid.semi_major_axis_length
+    # hp.sez    = _o.origin_uncertainty.confidence_ellipsoid.semi_intermediate_axis_length
+    hp.seh    = 1000
+    if _o.origin_uncertainty:
+        if _o.origin_uncertainty.horizontal_uncertainty:
+            hp.seh    = _o.origin_uncertainty.horizontal_uncertainty
+    hp.sez    = 10000
+    if _o.depth_errors:
+        if _o.depth_errors.uncertainty:
+            hp.sez    = _o.depth_errors.uncertainty        
     if _m:
-	hp.qmag   = _m.mag
+        hp.qmag   = _m.mag
     
     # The index 'k' is deliberately non-Pythonic to deal with the fortran
     # subroutines which need to be called and the structure of the original HASH code.
@@ -44,45 +56,51 @@ def inputOBSPY(hp, event):
     hp.p_index = []
     k = 0
     for _i, arrv in enumerate(_o.arrivals):
-	# load up params
-	pick = arrv.pick_id.getReferredObject()
-	hp.sname[k]     = pick.waveform_id.station_code
-	hp.snet[k]      = pick.waveform_id.network_code
-	hp.scomp[k]     = pick.waveform_id.channel_code
-	hp.arid[k]      = pick.creation_info.version
-	
-	hp.qazi[k] = arrv.azimuth
-	hp.dist[k] = arrv.distance * 111.2
-	
-	if (hp.qazi[k] < 0.):
-	    hp.qazi[k] += 360.
-	
-	if (hp.dist[k] > hp.delmax):
-	    continue
+        # load up params
+        #pick = arrv.pick_id.getReferredObject()
+        pick = arrv.pick_id.get_referred_object()
+        # hp.sname[k]     = pick.waveform_id.station_code
+        # hp.snet[k]      = pick.waveform_id.network_code
+        # hp.scomp[k]     = pick.waveform_id.channel_code
+        # if pick.creation_info.version:
+        #     hp.arid[k]  = pick.creation_info.version
+        # else:
+        #     hp.arid[k]  = "0"
+        hp.qazi[k] = arrv.azimuth
+        hp.dist[k] = arrv.distance * 111.2
+        
+        if (hp.qazi[k] < 0.):
+            hp.qazi[k] += 360.
+        
+        if (hp.dist[k] > hp.delmax):
+            continue
 	    
-	if arrv.phase not in 'Pp':
-	    continue
+        if arrv.phase not in 'Pp':
+            continue
+
+        if not hasattr(pick, 'polarity'):
+            continue
+        
+        if pick.polarity == 'positive':
+            hp.p_pol[k] = 1
+        elif pick.polarity == 'negative':
+            hp.p_pol[k] = -1
+        else:
+            continue
 	
-	if (pick.polarity is 'positive'):
-	    hp.p_pol[k] = 1
-	elif (pick.polarity is 'negative'):
-	    hp.p_pol[k] = -1
-	else:
-	    continue
-	
-	if  (pick.onset is 'impulsive'):
-	    hp.p_qual[k] = 0
-	elif (pick.onset is 'emergent'):
-	    hp.p_qual[k] = 1
-	elif (pick.onset is 'questionable'):
-	    hp.p_qual[k] = 1
-	else:
-	    hp.p_qual[k] = 0
+        if  (pick.onset is 'impulsive'):
+            hp.p_qual[k] = 0
+        elif (pick.onset is 'emergent'):
+            hp.p_qual[k] = 1
+        elif (pick.onset is 'questionable'):
+            hp.p_qual[k] = 1
+        else:
+            hp.p_qual[k] = 0
 	    
-	# polarity check in original code... doesn't work here
-	#hp.p_pol[k] = hp.p_pol[k] * hp.spol
-	hp.p_index.append(_i) # indicies of [arrivals] which passed
-	k += 1
+        # polarity check in original code... doesn't work here
+        #hp.p_pol[k] = hp.p_pol[k] * hp.spol
+        hp.p_index.append(_i) # indicies of [arrivals] which passed
+        k += 1
     hp.npol = k # k is zero indexed in THIS loop
 
 def outputOBSPY(hp, event=None, only_fm_picks=False):
@@ -110,47 +128,48 @@ def outputOBSPY(hp, event=None, only_fm_picks=False):
     # Returns new (or updates existing) Event with HASH solution
     n = hp.npol
     if event is None:
-	event = Event(focal_mechanisms=[], picks=[], origins=[])
-	origin = Origin(arrivals=[])
-	origin.time = UTCDateTime(hp.tstamp)
-	origin.latitude = hp.qlat
-	origin.longitude = hp.qlon
-	origin.depth = hp.qdep
-	origin.creation_info = CreationInfo(version=hp.icusp)
-	origin.resource_id = ResourceIdentifier('smi:hash/Origin/{0}'.format(hp.icusp))
-	for _i in range(n):
-	    p = Pick()
-	    p.creation_info = CreationInfo(version=hp.arid[_i])
-	    p.resource_id = ResourceIdentifier('smi:hash/Pick/{0}'.format(p.creation_info.version))
-	    p.waveform_id = WaveformStreamID(network_code=hp.snet[_i], station_code=hp.sname[_i], channel_code=hp.scomp[_i])
-	    if hp.p_pol[_i] > 0:
-		p.polarity = 'positive'
-	    else:
-		p.polarity = 'negative'
-	    a = Arrival()
-	    a.creation_info = CreationInfo(version=hp.arid[_i])
-	    a.resource_id = ResourceIdentifier('smi:hash/Arrival/{0}'.format(p.creation_info.version))
-	    a.azimuth = hp.p_azi_mc[_i,0]
-	    a.takeoff_angle = 180. - hp.p_the_mc[_i,0]
-	    a.pick_id = p.resource_id
-	    origin.arrivals.append(a)
-	    event.picks.append(p)
-	event.origins.append(origin)
-	event.preferred_origin_id = str(origin.resource_id)
+        event = Event(focal_mechanisms=[], picks=[], origins=[])
+        origin = Origin(arrivals=[])
+        origin.time = UTCDateTime(hp.tstamp)
+        origin.latitude = hp.qlat
+        origin.longitude = hp.qlon
+        origin.depth = hp.qdep
+        origin.creation_info = CreationInfo(version=hp.icusp)
+        origin.resource_id = ResourceIdentifier('smi:hash/Origin/{0}'.format(hp.icusp))
+        for _i in range(n):
+            p = Pick()
+            # p.creation_info = CreationInfo(version=hp.arid[_i])
+            # p.resource_id = ResourceIdentifier('smi:hash/Pick/{0}'.format(p.creation_info.version))
+            # p.waveform_id = WaveformStreamID(network_code=hp.snet[_i], station_code=hp.sname[_i], channel_code=hp.scomp[_i])
+            if hp.p_pol[_i] > 0:
+                p.polarity = 'positive'
+            else:
+                p.polarity = 'negative'
+            a = Arrival()
+            # a.creation_info = CreationInfo(version=hp.arid[_i])
+            #a.resource_id = ResourceIdentifier('smi:hash/Arrival/{0}'.format(p.creation_info.version))
+            a.azimuth = hp.p_azi_mc[_i,0]
+            a.takeoff_angle = 180. - hp.p_the_mc[_i,0]
+            a.pick_id = p.resource_id
+            origin.arrivals.append(a)
+            event.picks.append(p)
+        event.origins.append(origin)
+        event.preferred_origin_id = str(origin.resource_id)
     else: # just update the changes
-	origin = event.preferred_origin()
-	picks = []
-	arrivals = []
-	for _i in range(n):
-	    ind = hp.p_index[_i]
-	    a = origin.arrivals[ind]
-	    p = a.pick_id.getReferredObject()
-	    a.takeoff_angle = hp.p_the_mc[_i,0]
-	    picks.append(p)
-	    arrivals.append(a)
-	if only_fm_picks:
-	    origin.arrivals = arrivals
-	    event.picks = picks
+        origin = event.preferred_origin()
+        picks = []
+        arrivals = []
+        for _i in range(n):
+            ind = hp.p_index[_i]
+            a = origin.arrivals[ind]
+            #p = a.pick_id.getReferredObject()
+            p = a.pick_id.get_referred_object()
+            a.takeoff_angle = hp.p_the_mc[_i,0]
+            picks.append(p)
+            arrivals.append(a)
+        if only_fm_picks:
+            origin.arrivals = arrivals
+            event.picks = picks
     # Use me double couple calculator and populate planes/axes etc
     x = hp._best_quality_index
     # Put all the mechanisms into the 'focal_mechanisms' list, mark "best" as preferred
